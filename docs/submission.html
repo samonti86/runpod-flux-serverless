@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Runpod Serverless Endpoint Case Study — Saul Montiel</title>
+<style>
+  @page { size: Letter; margin: 0.6in 0.7in; }
+  html { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+
+  :root {
+    --ink:#1c1f23; --muted:#5a6169; --accent:#5b4bd6; --line:#d8dce2;
+    --bg:#f4f4fb; --good:#1a6b45; --warn:#b5451b; --code:#eef0f4;
+  }
+
+  body { font-family:"Segoe UI",Calibri,Arial,sans-serif; font-size:10pt;
+         line-height:1.45; color:var(--ink); margin:0; }
+
+  h1 { font-size:19pt; font-weight:700; margin:0 0 2pt 0; letter-spacing:-.01em; }
+  .sub { font-size:11pt; color:var(--muted); margin:0 0 3pt 0; }
+  .meta { font-size:9pt; color:var(--muted); margin:0 0 14pt 0;
+          padding-bottom:8pt; border-bottom:2pt solid var(--accent); }
+  .meta a { color:var(--accent); text-decoration:none; }
+
+  h2 { font-size:12pt; font-weight:700; color:var(--accent); margin:16pt 0 6pt 0;
+       padding-bottom:3pt; border-bottom:1pt solid var(--line); page-break-after:avoid; }
+  h3 { font-size:10.5pt; font-weight:700; margin:11pt 0 4pt 0; page-break-after:avoid; }
+
+  p { margin:0 0 7pt 0; }
+  ul,ol { margin:0 0 7pt 0; padding-left:16pt; }
+  li { margin-bottom:3pt; }
+
+  table { width:100%; border-collapse:collapse; margin:0 0 9pt 0; font-size:9.2pt; }
+  th { background:var(--bg); text-align:left; padding:4pt 6pt; font-size:8.4pt;
+       text-transform:uppercase; letter-spacing:.04em; border-bottom:1pt solid var(--accent); }
+  td { padding:4pt 6pt; border-bottom:.5pt solid var(--line); vertical-align:top; }
+  tr { page-break-inside:avoid; }
+
+  pre { background:var(--code); border-left:2.5pt solid var(--accent); padding:6pt 8pt;
+        margin:0 0 8pt 0; font-family:Consolas,"Courier New",monospace; font-size:8.3pt;
+        line-height:1.35; white-space:pre-wrap; page-break-inside:avoid; }
+  code { font-family:Consolas,"Courier New",monospace; font-size:9pt;
+         background:var(--code); padding:0 2pt; border-radius:2px; }
+
+  .box { background:var(--bg); border-left:2.5pt solid var(--accent);
+         padding:7pt 9pt; margin:0 0 9pt 0; page-break-inside:avoid; }
+  .box.warn { border-left-color:var(--warn); }
+  .box.good { border-left-color:var(--good); }
+  .box p:last-child { margin-bottom:0; }
+
+  figure { margin:0 0 9pt 0; text-align:center; page-break-inside:avoid; }
+  figure img { width:3.1in; height:3.1in; border:1pt solid var(--line); border-radius:3px; }
+  figcaption { font-size:8.4pt; color:var(--muted); margin-top:4pt; font-style:italic; }
+
+  .ok  { color:var(--good); font-weight:600; }
+  .no  { color:var(--warn); font-weight:600; }
+  .small { font-size:8.6pt; color:var(--muted); }
+  .pb { page-break-before:always; }
+</style>
+</head>
+<body>
+
+<h1>Runpod Serverless Endpoint Case Study</h1>
+<p class="sub">FLUX.1-dev text-to-image endpoint — build, deployment, and results</p>
+<p class="meta">
+  <strong>Saul Montiel</strong> &nbsp;·&nbsp; 18 August 2026 &nbsp;·&nbsp;
+  Repository: <a href="https://github.com/samonti86/runpod-flux-serverless">github.com/samonti86/runpod-flux-serverless</a>
+  &nbsp;·&nbsp; Endpoint ID: <code>zj04tmtdmunovm</code>
+</p>
+
+<h2>Summary</h2>
+
+<p>A working Runpod Serverless endpoint that accepts a text prompt and returns a
+generated 1024&times;1024 PNG, running <strong>black-forest-labs/FLUX.1-dev</strong>
+on an H100 80&nbsp;GB. Generation takes <strong>7.4&nbsp;seconds</strong>; the
+endpoint scales to zero between requests.</p>
+
+<table>
+  <tr><th>Item</th><th>Detail</th></tr>
+  <tr><td>Model</td><td>black-forest-labs/FLUX.1-dev (12B params, bf16)</td></tr>
+  <tr><td>Endpoint</td><td><code>zj04tmtdmunovm</code> — Queue type, US-CA-2</td></tr>
+  <tr><td>Image</td><td>Built by Runpod from GitHub; base <code>pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime</code></td></tr>
+  <tr><td>GPU</td><td>H100 80 GB SXM · 33.8 GB VRAM in use</td></tr>
+  <tr><td>Storage</td><td>50 GB network volume caching the weights across workers</td></tr>
+  <tr><td>Code</td><td><code>handler.py</code>, <code>Dockerfile</code>, <code>test_endpoint.py</code>, <code>test_input.json</code></td></tr>
+</table>
+
+<h2>Result</h2>
+
+<figure>
+  <img src="example-output.png" alt="A red fox sitting in tall grass at golden hour">
+  <figcaption>Prompt: &ldquo;a red fox sitting in tall grass at golden hour, shallow depth
+  of field, photorealistic&rdquo; &nbsp;·&nbsp; 28 steps &nbsp;·&nbsp; guidance 3.5
+  &nbsp;·&nbsp; seed 42 &nbsp;·&nbsp; 1024&times;1024</figcaption>
+</figure>
+
+<h3>Input</h3>
+<pre>POST https://api.runpod.ai/v2/zj04tmtdmunovm/runsync
+{
+  "input": {
+    "prompt": "a red fox sitting in tall grass at golden hour, shallow depth of field, photorealistic",
+    "num_inference_steps": 28,
+    "guidance_scale": 3.5,
+    "width": 1024,
+    "height": 1024,
+    "seed": 42
+  }
+}</pre>
+
+<h3>Output</h3>
+<pre>{
+  "image_base64": "iVBORw0KGgoAAAANSUhEUg...",   (1488 KB, decoded to output/flux_42.png)
+  "seed": 42,
+  "parameters": { "model": "black-forest-labs/FLUX.1-dev", "num_inference_steps": 28,
+                  "guidance_scale": 3.5, "width": 1024, "height": 1024 },
+  "generation_time_seconds": 7.44
+}</pre>
+
+<p class="small">The seed is echoed back deliberately, so any image the endpoint
+produces can be reproduced exactly.</p>
+
+<h2 class="pb">The design decision that mattered most</h2>
+
+<p>The case study asks for <em>&ldquo;a Docker image that includes your serverless
+handler and the model.&rdquo;</em> I built it that way first. <strong>It cannot be built
+on Runpod</strong>, and rather than assume that, I established it from the build logs.</p>
+
+<p>FLUX.1-dev is a <strong>gated</strong> model, so downloading it requires an
+authenticated Hugging Face token — which means the build needs a secret. Two attempts:</p>
+
+<table>
+  <tr><th>Attempt</th><th>Result</th></tr>
+  <tr>
+    <td><code>RUN --mount=type=secret,id=hf_token</code></td>
+    <td><span class="no">Failed:</span> <code>ERROR: secret hf_token: not found</code></td>
+  </tr>
+  <tr>
+    <td><code>ARG HF_TOKEN</code>, with the token set as an endpoint environment variable backed by a Runpod secret</td>
+    <td><span class="no">Failed:</span> the step expanded to <code>RUN HUGGING_FACE_HUB_TOKEN="" ...</code> — the variable was empty, so endpoint environment variables are not injected into the build</td>
+  </tr>
+</table>
+
+<p>The decisive evidence is the build command Runpod prints in its own logs:</p>
+
+<pre>/usr/bin/docker buildx build -t registry.runpod.net/samonti86-runpod-flux-serverless-...
+  --file .../Dockerfile --network=default --progress=plain
+  --output type=oci,dest=... --ulimit cpu=1800 --ulimit nofile=1024:1024
+  --cache-to type=local,dest=...</pre>
+
+<div class="box warn">
+  <p><strong>No <code>--build-arg</code>. No <code>--secret</code>.</strong> Neither
+  mechanism is passed, so a gated model cannot be authenticated for during a
+  Runpod-side build. That is a platform constraint, not a configuration mistake.</p>
+</div>
+
+<h3>What I did instead, and why</h3>
+
+<p>Building locally and pushing a ~41&nbsp;GB image does work — I got as far as a
+completed local build. But it moves the image out of Runpod's own pipeline and costs
+roughly 80 minutes of upload per iteration on a domestic connection.</p>
+
+<p>So the image carries only the handler and its dependencies (~4&nbsp;GB), and the
+model is fetched once at worker cold start using the <code>HUGGING_FACE_HUB_TOKEN</code>
+secret, cached on a <strong>network volume</strong> so later workers start from cache.
+That is Runpod's own mechanism for large and gated models.</p>
+
+<p><strong>The trade-off, stated plainly:</strong> the first cold start pays a 34&nbsp;GB
+download. Every one after that reads from the volume. Baking the weights in would make
+the first start as fast as the rest — at the cost of an image Runpod cannot build.</p>
+
+<h2>Measured results</h2>
+
+<h3>Cold start — three numbers, because they measure different things</h3>
+
+<table>
+  <tr><th>Boot</th><th>Worker</th><th>Time</th><th>What it measures</th></tr>
+  <tr><td>1st</td><td><code>t5c3xw34j0crqm</code></td><td><strong>177.3 s</strong></td><td>Cold — downloading 34 GB (23 files in 2m06s)</td></tr>
+  <tr><td>2nd</td><td><code>t5c3xw34j0crqm</code></td><td>8.9 s</td><td>Same worker restarting, OS page cache still warm</td></tr>
+  <tr><td>3rd</td><td><code>f2jgqs4h4xsqvp</code></td><td><strong>41.1 s</strong></td><td><strong>A different worker</strong>, reading from the network volume</td></tr>
+</table>
+
+<div class="box good">
+  <p><strong>41.1&nbsp;s is the honest steady-state figure.</strong> The 8.9&nbsp;s is
+  flattering but not representative — it is the same machine restarting with the weights
+  still in RAM. The third row is the one that validates the design: a worker that never
+  downloaded the model booted in 41&nbsp;s because the volume already held it.</p>
+</div>
+
+<h3>End-to-end, measured from the client</h3>
+
+<pre>status: COMPLETED      round-trip: 29.5s
+delayTime:      20,728 ms   &lt;- queue wait + worker spin-up
+executionTime:   8,198 ms   &lt;- the handler
+generation:       7.44 s    &lt;- denoising alone (28 steps @ 4.09 it/s)</pre>
+
+<p>Seventy percent of that round trip was <em>acquiring a worker</em>, not generating.
+Reporting &ldquo;30 seconds per image&rdquo; would be wrong and would point optimisation
+at the wrong layer — which is why <code>test_endpoint.py</code> prints Runpod's
+<code>delayTime</code> and <code>executionTime</code> separately rather than just the
+wall clock.</p>
+
+<h3>Cost</h3>
+<p>Billed per millisecond at $0.00133/s ($4.79/hr) with scale-to-zero, so the endpoint
+costs nothing between requests. A cold start plus one generation is roughly $0.07.</p>
+
+<h2 class="pb">Handler design</h2>
+
+<h3>The model loads at module scope, not inside <code>handler()</code></h3>
+<p>A serverless worker is a long-lived process that serves many jobs. Module scope runs
+once per worker boot; <code>handler()</code> runs once per request. Loading a 34&nbsp;GB
+model inside the handler would work, but every request would pay the load cost instead
+of only the first — the serverless equivalent of opening a database connection per query
+instead of using a pool.</p>
+
+<h3><code>HF_HOME</code> is set before <code>huggingface_hub</code> is imported</h3>
+<p>It is read into module constants at import time, so setting it afterwards silently
+does nothing. That ordering bug produces a correct-looking configuration and a full
+re-download on every boot. The handler points it at <code>/runpod-volume</code> when a
+network volume is mounted and falls back to local storage when one is not.</p>
+
+<h3>Input is clamped, not trusted</h3>
+<p>The endpoint is reachable once deployed, so every numeric field is bounded:
+steps 1–50, dimensions &le;1536 and rounded to a multiple of 16 (FLUX's VAE requires it),
+guidance 0–20. An unclamped <code>num_inference_steps</code> is a simple way for a caller
+to hold a GPU — and a bill — open indefinitely.</p>
+
+<h3>Errors return, they do not raise</h3>
+<p>A bad request returns <code>{"error": "..."}</code> so the caller gets an actionable
+message and the worker stays warm for the next job. CUDA out-of-memory is caught
+separately because it is the most likely production failure and the fix is caller-side
+(smaller dimensions) rather than a code change.</p>
+
+<h2>Two things I got wrong, and how they surfaced</h2>
+
+<table>
+  <tr><th>Issue</th><th>Diagnosis</th></tr>
+  <tr>
+    <td><code>TypeError: FluxPipeline.__call__() got an unexpected keyword argument 'negative_prompt'</code></td>
+    <td>I exposed a <code>negative_prompt</code> input the model cannot accept. FLUX.1-dev is
+    <em>guidance-distilled</em> — the classifier-free guidance pass a negative prompt steers
+    was trained out — so <code>FluxPipeline</code> raises even when the value is
+    <code>None</code>. Removed from both the code and the documented API.</td>
+  </tr>
+  <tr>
+    <td><code>/runsync</code> returned <code>IN_QUEUE</code> after 90 s and looked like a failure</td>
+    <td><code>/runsync</code> is only mostly synchronous: it blocks for about 90 seconds, then
+    returns the job handle rather than the result. The test client now falls back to polling
+    <code>/status/&lt;id&gt;</code>, which is what a cold start requires.</td>
+  </tr>
+</table>
+
+<h2>Reproducing this</h2>
+
+<pre>git clone https://github.com/samonti86/runpod-flux-serverless
+export RUNPOD_API_KEY=...
+export RUNPOD_ENDPOINT_ID=zj04tmtdmunovm
+python test_endpoint.py "a red fox in tall grass at golden hour"</pre>
+
+<p>Writes the PNG to <code>output/</code>, prints the seed, and reports the delay/execution
+split. The endpoint can equally be driven from the console's <strong>Requests</strong> tab
+or from Postman by POSTing <code>test_input.json</code>.</p>
+
+<h3>Deployment settings that matter</h3>
+<table>
+  <tr><th>Setting</th><th>Value</th><th>Why</th></tr>
+  <tr><td>Endpoint type</td><td>Queue</td><td>Matches the <code>handler()</code> contract; Load balancer is for workers running their own HTTP server</td></tr>
+  <tr><td>GPU</td><td>48 GB minimum</td><td>Measured at 33.8 GB in use. The quickstart suggests 16 GB, which is right for its example handler — that one loads no model</td></tr>
+  <tr><td>Active workers</td><td>0</td><td>Scale to zero; pay only while generating</td></tr>
+  <tr><td>Idle timeout</td><td>120 s</td><td>Long enough that consecutive requests reuse a warm worker</td></tr>
+  <tr><td>Env var</td><td><code>HUGGING_FACE_HUB_TOKEN</code> &rarr; Runpod secret</td><td>Gated model; referencing a secret keeps the token out of plain configuration</td></tr>
+  <tr><td>Network volume</td><td>50 GB attached</td><td>Caches weights across workers — the difference between a 177 s and a 41 s cold start</td></tr>
+</table>
+
+<h2>What I would do differently with more time</h2>
+<ul>
+  <li><strong>Return an object-storage URL instead of base64.</strong> Inline base64 keeps the
+  endpoint self-contained and easy to test, but inflates the payload ~33% and pushes every
+  byte through the API gateway. At volume, writing to S3 and returning a URL is the better shape.</li>
+  <li><strong>Warm the volume deliberately.</strong> The first request after deployment pays the
+  full download. A one-off warm-up job at deploy time would move that cost off the first real user.</li>
+  <li><strong>Push to a registry that supports build secrets</strong> if baking weights in were a
+  hard requirement — that restores the fast first cold start at the cost of a 41 GB image.</li>
+</ul>
+
+<h2>A note on how this was built</h2>
+<p>I wrote this with AI coding assistance, which is how I build tooling — I specify what needs
+to exist, drive the assistant, then read, test and debug the result. I am stating that plainly
+because it is how the work was actually done. The design decisions documented here are ones I
+made and can defend: where the model loads, why <code>HF_HOME</code> precedes the import, why
+inputs are clamped, why the GPU is sized to the model rather than to the tutorial, and why the
+weights are fetched at cold start rather than baked in. The two failures above were diagnosed
+by reading build logs and tracebacks, not by guessing.</p>
+
+</body>
+</html>
