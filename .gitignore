@@ -1,0 +1,32 @@
+# ── SECRETS — never commit. This file exists BEFORE git init on purpose. ──
+.env
+.env.*
+*.token
+hf_token*
+secrets/
+
+# Model weights / caches (baked into the Docker image, never into git)
+models/
+*.safetensors
+*.bin
+*.ckpt
+
+# Generated outputs from endpoint tests
+output/
+*.png
+*.jpg
+*.jpeg
+!docs/*.png
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Local working notes
+CLAUDE.md

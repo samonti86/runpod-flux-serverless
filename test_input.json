@@ -1,0 +1,10 @@
+{
+  "input": {
+    "prompt": "a red fox sitting in tall grass at golden hour, shallow depth of field, photorealistic",
+    "num_inference_steps": 28,
+    "guidance_scale": 3.5,
+    "width": 1024,
+    "height": 1024,
+    "seed": 42
+  }
+}
