@@ -1,43 +1,32 @@
 # FLUX.1-dev serverless worker for Runpod.
 #
-# Built by Runpod from GitHub (Serverless -> New Endpoint -> import from GitHub),
-# which builds on Runpod's infrastructure and stores the image in their private
-# registry. The Hugging Face token is supplied as the build arg HF_TOKEN.
+# The weights are NOT baked into this image, and that is a deliberate decision
+# forced by the platform. See README "Why the model is not in the image" -- the
+# short version is that Runpod's GitHub builder invokes `docker buildx build`
+# with neither --build-arg nor --secret, so a GATED model such as FLUX.1-dev
+# cannot be authenticated for during a Runpod-side build. Proven from build logs,
+# not assumed.
 #
-# Equivalent local build, which should use a secret mount because the image would
-# be pushed to a public registry:
+# The model is fetched once at worker cold start using the HUGGING_FACE_HUB_TOKEN
+# secret configured on the endpoint, and cached on a Runpod network volume when
+# one is attached so that subsequent workers start warm.
 #
-#   podman build --secret id=hf_token,src=$HOME/.hf_token #     -t docker.io/samontie86/flux-serverless:v1 .
-#
+# Build and push:
+#   podman build -t docker.io/samontie86/flux-serverless:v1 .
+#   podman push docker.io/samontie86/flux-serverless:v1
+
 FROM pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime
 
 ENV PYTHONUNBUFFERED=1 \
-    HF_HOME=/models \
-    HF_HUB_DISABLE_TELEMETRY=1 \
-    HF_HUB_ENABLE_HF_TRANSFER=0
+    HF_HUB_DISABLE_TELEMETRY=1
 
 WORKDIR /app
 
-# Dependencies first, so editing handler.py later does not invalidate the
-# (very expensive) model layer below.
+# Dependencies are the only heavy layer now, so the image is ~4 GB to push
+# rather than ~41 GB.
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# ── The expensive layer: ~34 GB of weights baked into the image ──────────────
-COPY builder/download_model.py builder/download_model.py
-# FLUX.1-dev is gated, so this download must authenticate or it 401s.
-#
-# The token is taken as a build ARG rather than a BuildKit secret mount, because
-# a hosted builder may not support --mount=type=secret and an unparseable
-# Dockerfile fails before it can report anything useful. The cost is that the
-# value is recoverable from image history -- acceptable here because Runpod
-# builds into its own private registry. For a build pushed to a PUBLIC registry,
-# use the secret-mount form shown in the README instead.
-ARG HF_TOKEN=""
-ARG HUGGING_FACE_HUB_TOKEN=""
-RUN HUGGING_FACE_HUB_TOKEN="${HUGGING_FACE_HUB_TOKEN:-$HF_TOKEN}" python builder/download_model.py
-
-# Handler last — cheap layer, fast to rebuild while iterating.
 COPY handler.py test_input.json ./
 
 CMD ["python", "-u", "handler.py"]

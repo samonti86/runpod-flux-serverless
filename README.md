@@ -1,20 +1,19 @@
 # FLUX.1-dev on Runpod Serverless
 
-A serverless text-to-image endpoint: send a prompt, get a PNG back. Built for the
-Runpod Serverless Endpoint case study.
+A serverless text-to-image endpoint: send a prompt, get a PNG back.
 
 **Model:** [black-forest-labs/FLUX.1-dev](https://huggingface.co/black-forest-labs/FLUX.1-dev)
-· **Platform:** Runpod Serverless · **Base:** `pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime`
+· **Platform:** Runpod Serverless (Queue) · **Base:** `pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime`
 
 ---
 
 ## How it works
 
 ```
-POST /run  ──►  Runpod queue  ──►  worker (scale-to-zero)
-                                      │
-                                      ├─ cold start: load FLUX.1-dev from local disk
-                                      └─ per request: handler(job) ──► base64 PNG
+POST /runsync  ──►  Runpod queue  ──►  worker (scale-to-zero)
+                                          │
+                                          ├─ cold start: load FLUX.1-dev
+                                          └─ per request: handler(job) ──► base64 PNG
 ```
 
 The worker is a long-lived process. `handler()` runs once per request; everything
@@ -26,11 +25,71 @@ request pay the model-load cost instead of only the first.
 
 | File | Purpose |
 |---|---|
-| `handler.py` | The serverless handler: input validation, inference, base64 response |
-| `Dockerfile` | Builds the worker image with the model baked in |
-| `builder/download_model.py` | Downloads FLUX.1-dev at **build** time, not run time |
+| `handler.py` | The serverless handler: cache setup, input validation, inference, base64 response |
+| `Dockerfile` | Builds the worker image |
 | `requirements.txt` | Pinned dependencies |
-| `test_input.json` | Sample job payload (Runpod's local-test convention) |
+| `test_input.json` | Sample job payload |
+| `test_endpoint.py` | Test client — calls `/runsync` and writes the PNG to disk |
+
+---
+
+## Why the model is not baked into the image
+
+The case study asks for *"a Docker image that includes your serverless handler and
+the model."* I built it that way first. **It cannot be built on Runpod, and I have
+the build logs to prove why rather than assuming it.**
+
+FLUX.1-dev is a **gated** model — downloading it requires an authenticated
+Hugging Face token. So the build needs a secret. Two attempts, two failures:
+
+**Attempt 1 — BuildKit secret mount** (`RUN --mount=type=secret,id=hf_token`):
+
+```
+#15 ERROR: secret hf_token: not found
+ERROR: failed to build: failed to solve: secret hf_token: not found
+```
+
+**Attempt 2 — build argument** (`ARG HF_TOKEN`), with `HUGGING_FACE_HUB_TOKEN`
+set as an endpoint environment variable backed by a Runpod secret:
+
+```
+#12 [6/7] RUN HUGGING_FACE_HUB_TOKEN="" python builder/download_model.py
+#12 0.208 No Hugging Face token found. FLUX.1-dev is a gated repo...
+```
+
+Note the expansion: `HUGGING_FACE_HUB_TOKEN=""`. The build arg was empty, meaning
+the endpoint's environment variables are **not** injected into the build.
+
+The decisive evidence is the build command Runpod runs, which its own logs print:
+
+```
+/usr/bin/docker buildx build -t registry.runpod.net/samonti86-runpod-flux-serverless-...
+  --file .../Dockerfile --network=default --progress=plain
+  --output type=oci,dest=... --ulimit cpu=1800 --ulimit nofile=1024:1024
+  --cache-to type=local,dest=...
+```
+
+**No `--build-arg`. No `--secret`.** Neither mechanism is available, so a gated
+model cannot be authenticated for during a Runpod-side build. This is a platform
+constraint, not a configuration mistake.
+
+Building locally instead and pushing a ~41 GB image was the alternative, and it
+works — but it moves the model out of Runpod's own build pipeline and costs ~80
+minutes of upload per iteration.
+
+**What this repository does instead:** the image carries the handler and its
+dependencies (~4 GB), and the model is fetched once at worker cold start using
+the `HUGGING_FACE_HUB_TOKEN` secret, cached on a Runpod **network volume** so
+subsequent workers start from cache rather than re-downloading. That is Runpod's
+intended mechanism for large and gated models — the console exposes it directly
+as the **Cached model** field.
+
+The trade-off, stated plainly: **the first cold start is slow** (~34 GB download).
+Every cold start after that reads from the volume. Baking the weights in would
+make the *first* start as fast as the rest, at the cost of a 41 GB image that
+Runpod cannot build.
+
+---
 
 ## API
 
@@ -45,6 +104,9 @@ request pay the model-load cost instead of only the first.
 | `width` / `height` | int | `1024` | Clamped to ≤1536, rounded down to a multiple of 16 |
 | `seed` | int | random | Echoed back, so any image is reproducible |
 
+Inputs are clamped rather than trusted — an unbounded `num_inference_steps` is an
+easy way for a caller to hold a GPU open indefinitely.
+
 ### Output
 
 ```json
@@ -56,74 +118,76 @@ request pay the model-load cost instead of only the first.
 }
 ```
 
-Errors return `{"error": "..."}` rather than raising, so a bad request fails the
-job cleanly and leaves the worker warm for the next one.
+Errors return `{"error": "..."}` rather than raising, so a bad request fails
+cleanly and leaves the worker warm for the next job.
 
-## Build
+---
 
-FLUX.1-dev is a **gated** repo — the Hugging Face account behind the token must
-have accepted the licence on the model page first.
+## Build and push
 
 ```bash
-export HF_TOKEN=hf_xxxxxxxx
-
-docker buildx build --platform linux/amd64 \
-  --secret id=hf_token,env=HF_TOKEN \
-  -t <dockerhub-user>/flux-serverless:v1 --push .
+podman build -t docker.io/samontie86/flux-serverless:v1 .
+podman push docker.io/samontie86/flux-serverless:v1
 ```
 
-> **On the token.** It is passed as a BuildKit **secret**, mounted only for the
-> download step. It is never `COPY`d, never an `ENV`, and never becomes part of a
-> layer — so it cannot be recovered from the published image with
-> `docker history`. A build arg or an env var would leave it in the image
-> permanently, which matters here because this image is public.
-
-The image is roughly **41 GB** (≈34 GB of weights + CUDA/PyTorch base). That is the
-cost of the case study's requirement to include the model in the image, and it is
-the right trade: a scale-to-zero endpoint that downloaded 34 GB on every cold
-start would not be usable.
+No secret is needed at build time — that is the point of the design above.
 
 ## Deploy
 
-1. Runpod console → **Serverless** → **New Endpoint**
-2. Source: the Docker image above
-3. GPU: **48 GB** class (L40S / A6000). FLUX.1-dev in bf16 is ~24 GB of weights
-   plus activations; 24 GB cards are not enough headroom at 1024×1024.
-4. Container disk large enough for the image
-5. Workers: min 0 (scale to zero), max 1 for testing
+Runpod console → **Serverless → New Endpoint → Import from Docker Registry**
+
+| Setting | Value | Why |
+|---|---|---|
+| Endpoint type | **Queue** | Matches the `handler()` contract; Load balancer is for workers running their own HTTP server |
+| GPU | **48 GB** (A40 / RTX A6000 / L40S) | FLUX.1-dev in bf16 is ~34 GB of weights plus activations. 16 GB and 24 GB cards OOM during load |
+| Active workers | 0 | Scale to zero — pay only while generating |
+| Idle timeout | 120 s | Long enough that consecutive requests reuse a warm worker |
+| Execution timeout | 600 s | Safety net; a generation is 10–20 s |
+| FlashBoot | enabled | Free, and cuts cold starts |
+| Env var | `HUGGING_FACE_HUB_TOKEN` = `{{ RUNPOD_SECRET_hf_token }}` | Gated model; referencing a secret keeps the token out of plain config |
+| Network volume | attached | Caches the weights across workers |
+
+> The Runpod quickstart suggests a 16 GB GPU. That is correct for its example
+> handler, which loads no model. Sizing here follows the model, not the tutorial.
 
 ## Test
 
 ```bash
-curl -X POST https://api.runpod.ai/v2/<ENDPOINT_ID>/runsync \
-  -H "Authorization: Bearer $RUNPOD_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d @test_input.json | python -c "import sys,json,base64; \
-      d=json.load(sys.stdin); \
-      open('output.png','wb').write(base64.b64decode(d['output']['image_base64'])); \
-      print('wrote output.png, seed=', d['output']['seed'])"
+export RUNPOD_API_KEY=...
+export RUNPOD_ENDPOINT_ID=...
+python test_endpoint.py "a red fox in tall grass at golden hour"
 ```
+
+Writes the PNG to `output/`, prints the seed, and reports Runpod's own
+`delayTime` and `executionTime` so queue wait and cold start can be separated
+from actual inference.
+
+The endpoint can also be exercised from the console's **Requests** tab or from
+Postman by POSTing `test_input.json` to
+`https://api.runpod.ai/v2/<ENDPOINT_ID>/runsync`.
+
+---
 
 ## Notes and trade-offs
 
-- **Base64 vs object storage.** Returning the image inline keeps the endpoint
-  self-contained and easy to test. At higher volume or larger resolutions the
-  better pattern is to write to S3 and return a URL — base64 inflates the payload
-  by ~33% and every byte crosses the API gateway.
-- **Cold starts.** With weights on local disk a cold worker is ready in roughly
-  20–40s. Runpod's *active workers* setting removes this at the cost of paying for
-  idle GPU; for bursty traffic, scale-to-zero plus a warm-up request is usually the
-  better trade.
-- **Input clamping.** The endpoint is public once deployed. `num_inference_steps`
-  is clamped because an unbounded value is an easy way for a caller to occupy a
-  worker — and a GPU bill — indefinitely.
 - **bf16, not fp16.** FLUX is released in bfloat16; fp16 overflows on this
-  architecture and produces black images.
+  architecture and yields black images.
+- **Base64 vs object storage.** Returning the image inline keeps the endpoint
+  self-contained and easy to test. At higher volume, writing to S3 and returning a
+  URL is better — base64 inflates the payload ~33%.
+- **`HF_HOME` is set before `huggingface_hub` is imported.** It is read into module
+  constants at import time, so setting it afterwards silently does nothing. This is
+  the kind of ordering bug that produces a correct-looking config and a full
+  re-download every boot.
+- **Cold start vs idle cost.** Runpod's *active workers* setting removes cold starts
+  entirely at the cost of a permanently billed GPU. For bursty traffic, scale-to-zero
+  plus FlashBoot and a warm-up request is usually the better trade.
 
 ## Authorship
 
-Written by me with AI coding assistance (Claude), which is how I build tooling —
-I specify what needs to exist, drive the assistant, then read, test and debug the
-result. Every design decision documented here is one I can defend and did decide:
-where the model loads, why the token is a build secret, why inputs are clamped,
-and why the weights are baked into the image rather than fetched at runtime.
+Written by me with AI coding assistance, which is how I build tooling — I specify
+what needs to exist, drive the assistant, then read, test and debug the result.
+The design decisions documented here are ones I made and can defend: where the
+model loads, why `HF_HOME` precedes the import, why inputs are clamped, why the
+GPU is sized to the model rather than the quickstart, and why the weights are
+fetched at cold start rather than baked in.
