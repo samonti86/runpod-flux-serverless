@@ -118,7 +118,7 @@ endpoint scales to zero between requests.</p>
 <p class="small">The seed is echoed back deliberately, so any image the endpoint
 produces can be reproduced exactly.</p>
 
-<h2 class="pb">The design decision that mattered most</h2>
+<h2>The design decision that mattered most</h2>
 
 <p>The case study asks for <em>&ldquo;a Docker image that includes your serverless
 handler and the model.&rdquo;</em> I built it that way first. <strong>It cannot be built
@@ -154,18 +154,28 @@ authenticated Hugging Face token — which means the build needs a secret. Two a
 
 <h3>What I did instead, and why</h3>
 
-<p>Building locally and pushing a ~41&nbsp;GB image does work — I got as far as a
-completed local build. But it moves the image out of Runpod's own pipeline and costs
-roughly 80 minutes of upload per iteration on a domestic connection.</p>
+<p>The alternative is to build locally and push. I started that: the model downloaded
+successfully, but I abandoned the build partway through committing the layer, because a
+~41&nbsp;GB image plus the scratch space needed to compress it for upload exceeded the
+free disk on my machine. At a measured 66&nbsp;Mbps upstream, pushing an image that size
+is also roughly 80 minutes per iteration. Both are solvable with different hardware;
+neither is a good use of a three-day window.</p>
 
-<p>So the image carries only the handler and its dependencies (~4&nbsp;GB), and the
+<p>So the image carries only the handler and its dependencies &mdash; 6.5&nbsp;GB
+uncompressed, 3.44&nbsp;GB as pushed &mdash; and the
 model is fetched once at worker cold start using the <code>HUGGING_FACE_HUB_TOKEN</code>
 secret, cached on a <strong>network volume</strong> so later workers start from cache.
 That is Runpod's own mechanism for large and gated models.</p>
 
-<p><strong>The trade-off, stated plainly:</strong> the first cold start pays a 34&nbsp;GB
-download. Every one after that reads from the volume. Baking the weights in would make
-the first start as fast as the rest — at the cost of an image Runpod cannot build.</p>
+<p><strong>The trade-off, stated plainly:</strong> the first cold start against an empty
+volume pays a 34&nbsp;GB download. Every one after that reads from the volume, including on
+later deployments. Baking the weights in would make that first start as fast as the rest —
+at the cost of an image Runpod's own builder cannot produce for a gated model.</p>
+
+<p class="small">The slim image <em>was</em> built locally and pushed successfully, and
+is available at <code>docker.io/samontie86/flux-serverless:v1</code> as an alternative to
+the GitHub-built image. The deployed endpoint uses the image Runpod built from the
+repository.</p>
 
 <h2>Measured results</h2>
 
@@ -202,7 +212,7 @@ wall clock.</p>
 <p>Billed per millisecond at $0.00133/s ($4.79/hr) with scale-to-zero, so the endpoint
 costs nothing between requests. A cold start plus one generation is roughly $0.07.</p>
 
-<h2 class="pb">Handler design</h2>
+<h2>Handler design</h2>
 
 <h3>The model loads at module scope, not inside <code>handler()</code></h3>
 <p>A serverless worker is a long-lived process that serves many jobs. Module scope runs
@@ -275,10 +285,15 @@ or from Postman by POSTing <code>test_input.json</code>.</p>
   <li><strong>Return an object-storage URL instead of base64.</strong> Inline base64 keeps the
   endpoint self-contained and easy to test, but inflates the payload ~33% and pushes every
   byte through the API gateway. At volume, writing to S3 and returning a URL is the better shape.</li>
-  <li><strong>Warm the volume deliberately.</strong> The first request after deployment pays the
-  full download. A one-off warm-up job at deploy time would move that cost off the first real user.</li>
-  <li><strong>Push to a registry that supports build secrets</strong> if baking weights in were a
-  hard requirement — that restores the fast first cold start at the cost of a 41 GB image.</li>
+  <li><strong>Warm a fresh volume deliberately.</strong> Only the first request against an
+  empty volume pays the download — later deployments reuse it — but that one request is a real
+  user waiting three minutes. A warm-up job run once at provisioning time would move that cost
+  off them.</li>
+  <li><strong>Build where secrets are supported</strong> if baking the weights in were a hard
+  requirement — local BuildKit or a CI runner can mount a secret, and the resulting image would
+  be pushed to a registry for Runpod to pull. That restores a fast first cold start at the cost
+  of a ~41 GB image and a slow build-and-push cycle. The registry is not the constraint; the
+  builder is.</li>
 </ul>
 
 <h2>A note on how this was built</h2>

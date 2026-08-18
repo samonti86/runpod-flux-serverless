@@ -73,21 +73,24 @@ The decisive evidence is the build command Runpod runs, which its own logs print
 model cannot be authenticated for during a Runpod-side build. This is a platform
 constraint, not a configuration mistake.
 
-Building locally instead and pushing a ~41 GB image was the alternative, and it
-works — but it moves the model out of Runpod's own build pipeline and costs ~80
-minutes of upload per iteration.
+The alternative is building locally and pushing. I started that — the model downloaded
+fine — but abandoned it partway through committing the layer: a ~41 GB image plus the
+scratch space to compress it for upload exceeded the free disk on this machine, and at a
+measured 66 Mbps upstream the push alone is ~80 minutes per iteration.
 
 **What this repository does instead:** the image carries the handler and its
-dependencies (~4 GB), and the model is fetched once at worker cold start using
+dependencies (6.5 GB uncompressed, 3.44 GB pushed), and the model is fetched once at
+worker cold start using
 the `HUGGING_FACE_HUB_TOKEN` secret, cached on a Runpod **network volume** so
 subsequent workers start from cache rather than re-downloading. That is Runpod's
 intended mechanism for large and gated models — the console exposes it directly
 as the **Cached model** field.
 
-The trade-off, stated plainly: **the first cold start is slow** (~34 GB download).
-Every cold start after that reads from the volume. Baking the weights in would
-make the *first* start as fast as the rest, at the cost of a 41 GB image that
-Runpod cannot build.
+The trade-off, stated plainly: **the first cold start against an empty volume is
+slow** (~34 GB download). Every one after that reads from the volume, including on
+later deployments. Baking the weights in would make that first start as fast as the
+rest, at the cost of a ~41 GB image that Runpod's own builder cannot produce for a
+gated model.
 
 ---
 
