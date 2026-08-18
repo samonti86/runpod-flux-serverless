@@ -29,9 +29,14 @@ MODEL_ID = os.getenv("MODEL_ID", "black-forest-labs/FLUX.1-dev")
 
 # FLUX.1-dev is a gated repo: the token must belong to an account that has
 # accepted the licence on the model page, or this 401s.
-token = os.getenv("HUGGING_FACE_HUB_TOKEN")
+token = (os.getenv("HUGGING_FACE_HUB_TOKEN") or os.getenv("HF_TOKEN") or "").strip()
 if not token:
-    sys.exit("HUGGING_FACE_HUB_TOKEN not set — pass it as a BuildKit secret (see README).")
+    sys.exit(
+        "No Hugging Face token found. FLUX.1-dev is a gated repo, so the build "
+        "cannot download it anonymously. Provide the token as a BuildKit secret "
+        "(id=hf_token), a build arg (HF_TOKEN), or a build environment variable."
+    )
+print(f"[build] token present (…{token[-4:]}), authenticating", flush=True)
 
 print(f"[build] downloading {MODEL_ID} (diffusers layout only) ...", flush=True)
 
