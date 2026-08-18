@@ -19,6 +19,7 @@ On /runsync vs /run:
 """
 
 import base64
+import hashlib
 import json
 import os
 import sys
@@ -94,7 +95,10 @@ if "error" in out:
     sys.exit(1)
 
 os.makedirs("output", exist_ok=True)
-name = "output/flux_{}.png".format(out["seed"])
+# Seed alone is not a unique filename: the same seed with a different prompt is a
+# different image, and naming on seed alone silently overwrites the earlier one.
+tag = hashlib.sha1(prompt.encode()).hexdigest()[:6]
+name = "output/flux_{}_{}.png".format(out["seed"], tag)
 with open(name, "wb") as f:
     f.write(base64.b64decode(out["image_base64"]))
 

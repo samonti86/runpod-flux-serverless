@@ -208,6 +208,21 @@ at the wrong layer — which is why <code>test_endpoint.py</code> prints Runpod'
 <code>delayTime</code> and <code>executionTime</code> separately rather than just the
 wall clock.</p>
 
+<p>A second run against the same endpoint made the point sharper. Execution held steady
+while worker acquisition varied by a factor of eight:</p>
+
+<table>
+  <tr><th>Run</th><th>delayTime</th><th>executionTime</th><th>Generation</th><th>Round trip</th></tr>
+  <tr><td>1</td><td>20,728 ms</td><td>8,198 ms</td><td>7.44 s</td><td>29.5 s</td></tr>
+  <tr><td>2</td><td><strong>171,202 ms</strong></td><td>8,216 ms</td><td>7.40 s</td><td>182.3 s</td></tr>
+</table>
+
+<p>Same code, same endpoint, same prompt length &mdash; and a round trip six times longer.
+None of it was inference: <code>executionTime</code> moved by 18&nbsp;milliseconds. The
+variance was entirely in acquiring a GPU, and the console was reporting low supply for the
+48&nbsp;GB class at the time. A user reporting &ldquo;the endpoint got slower&rdquo; would be
+describing capacity, not the model &mdash; and only the split metric shows that.</p>
+
 <h3>Cost</h3>
 <p>Billed per millisecond at $0.00133/s ($4.79/hr) with scale-to-zero, so the endpoint
 costs nothing between requests. A cold start plus one generation is roughly $0.07.</p>
