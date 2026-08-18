@@ -175,6 +175,45 @@ Postman by POSTing `test_input.json` to
 
 ---
 
+## Measured results
+
+Deployed on an **H100 80 GB SXM** in `US-CA-2`, with a 50 GB network volume
+attached. All figures are from the endpoint's own logs, not estimates.
+
+### Generation
+
+```
+[job] steps=28 1024x1024 guidance=3.5 seed=42
+28/28 denoising steps @ 4.09 it/s
+[job] done in 7.8s (1488 KB base64)
+```
+
+**7.8 seconds** for a 1024x1024 image at 28 steps. VRAM in use: **33.8 GB** —
+which is why a 16 GB or 24 GB GPU is not an option for this model in bf16.
+
+### Cold start, and why there are three numbers
+
+| Boot | Worker | Time | What it measures |
+|---|---|---|---|
+| 1st | `t5c3xw34j0crqm` | **177.3s** | Cold. Downloading 34 GB (23 files in 2m06s) |
+| 2nd | `t5c3xw34j0crqm` | **8.9s** | Same worker restarting, OS page cache still warm |
+| 3rd | `f2jgqs4h4xsqvp` | **41.1s** | **A different worker**, reading from the network volume |
+
+**41.1s is the honest steady-state figure.** The 8.9s is flattering but not
+representative — it is the same machine restarting with the weights still in RAM.
+
+The third row is the one that validates the design: a worker that never
+downloaded the model booted in 41s because the volume already held it. Without
+the volume, every cold worker would repeat the 177s download.
+
+### Cost
+
+Billed per millisecond at $0.00133/s ($4.79/hr) with scale-to-zero, so the
+endpoint costs nothing between requests. A cold start plus one generation is
+roughly $0.07.
+
+---
+
 ## Notes and trade-offs
 
 - **bf16, not fp16.** FLUX is released in bfloat16; fp16 overflows on this
