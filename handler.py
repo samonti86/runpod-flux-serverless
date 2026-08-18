@@ -98,7 +98,6 @@ def handler(job):
 
     Input:
         prompt              (str, required)
-        negative_prompt     (str, optional)
         num_inference_steps (int, 1-50,   default 28)
         guidance_scale      (float,       default 3.5)
         width, height       (int, <=1536, default 1024, rounded to /16)
@@ -138,9 +137,13 @@ def handler(job):
             steps, width, height, guidance, seed), flush=True)
         t0 = time.time()
 
+        # No negative_prompt here, and that is a property of the model rather than
+        # an omission: FLUX.1-dev is guidance-distilled, so the classifier-free
+        # guidance pass that a negative prompt steers was trained out. FluxPipeline
+        # accepts no such argument and raises TypeError if one is passed, even as
+        # None. Steering away from content is done inside the prompt instead.
         result = pipe(
             prompt=prompt,
-            negative_prompt=job_input.get("negative_prompt"),
             num_inference_steps=steps,
             guidance_scale=guidance,
             width=width,

@@ -10,7 +10,7 @@ A serverless text-to-image endpoint: send a prompt, get a PNG back.
 ## How it works
 
 ```
-POST /runsync  ──►  Runpod queue  ──►  worker (scale-to-zero)
+POST /run (async) ──►  Runpod queue  ──►  worker (scale-to-zero)
                                           │
                                           ├─ cold start: load FLUX.1-dev
                                           └─ per request: handler(job) ──► base64 PNG
@@ -98,11 +98,15 @@ Runpod cannot build.
 | Field | Type | Default | Notes |
 |---|---|---|---|
 | `prompt` | string | — | **Required** |
-| `negative_prompt` | string | `null` | Optional |
 | `num_inference_steps` | int | `28` | Clamped to 1–50 |
 | `guidance_scale` | float | `3.5` | Clamped to 0–20 |
 | `width` / `height` | int | `1024` | Clamped to ≤1536, rounded down to a multiple of 16 |
 | `seed` | int | random | Echoed back, so any image is reproducible |
+
+There is deliberately no `negative_prompt`. FLUX.1-dev is guidance-distilled, so
+the classifier-free guidance pass a negative prompt would steer was trained out;
+`FluxPipeline` raises `TypeError` if the argument is passed at all. Steer away
+from unwanted content inside the prompt instead.
 
 Inputs are clamped rather than trusted — an unbounded `num_inference_steps` is an
 easy way for a caller to hold a GPU open indefinitely.
@@ -134,12 +138,15 @@ No secret is needed at build time — that is the point of the design above.
 
 ## Deploy
 
-Runpod console → **Serverless → New Endpoint → Import from Docker Registry**
+Runpod console → **Serverless → New Endpoint → import from GitHub**, selecting this
+repository, branch `master`, Dockerfile path `/Dockerfile`. Runpod builds the image
+on its own infrastructure and stores it in its private registry — which works here
+precisely because the build needs no secret.
 
 | Setting | Value | Why |
 |---|---|---|
 | Endpoint type | **Queue** | Matches the `handler()` contract; Load balancer is for workers running their own HTTP server |
-| GPU | **48 GB** (A40 / RTX A6000 / L40S) | FLUX.1-dev in bf16 is ~34 GB of weights plus activations. 16 GB and 24 GB cards OOM during load |
+| GPU | **48 GB minimum** (A40 / A6000 / L40S); an **H100 80 GB** was what supply offered | Measured at run time: `vram_allocated=33.8GB`. 16 GB and 24 GB cards OOM during load |
 | Active workers | 0 | Scale to zero — pay only while generating |
 | Idle timeout | 120 s | Long enough that consecutive requests reuse a warm worker |
 | Execution timeout | 600 s | Safety net; a generation is 10–20 s |
