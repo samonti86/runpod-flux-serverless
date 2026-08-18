@@ -182,6 +182,11 @@ attached. All figures are from the endpoint's own logs, not estimates.
 
 ### Generation
 
+![FLUX.1-dev output: a red fox in tall grass at golden hour](docs/example-output.png)
+
+*Prompt: "a red fox sitting in tall grass at golden hour, shallow depth of field,
+photorealistic" · 28 steps · guidance 3.5 · seed 42 · 1024x1024*
+
 ```
 [job] steps=28 1024x1024 guidance=3.5 seed=42
 28/28 denoising steps @ 4.09 it/s
@@ -205,6 +210,20 @@ representative — it is the same machine restarting with the weights still in R
 The third row is the one that validates the design: a worker that never
 downloaded the model booted in 41s because the volume already held it. Without
 the volume, every cold worker would repeat the 177s download.
+
+### End-to-end, measured from the client
+
+```
+status: COMPLETED      round-trip: 29.5s
+delayTime:      20,728 ms   <- queue wait + worker spin-up
+executionTime:   8,198 ms   <- the handler
+generation:       7.44 s    <- denoising alone
+```
+
+Seventy percent of that round trip was acquiring a worker, not generating. Reporting
+"30 seconds per image" would be wrong and would point optimisation at the wrong
+layer -- which is why `test_endpoint.py` prints Runpod's `delayTime` and
+`executionTime` separately rather than just the wall clock.
 
 ### Cost
 
